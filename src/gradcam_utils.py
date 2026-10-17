@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+from PIL import Image
 
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.image import show_cam_on_image
@@ -53,18 +54,20 @@ class GradCAMExplainer:
 
         return image.astype(np.float32)
 
-    def explain(self, image_tensor, target_class=None):
+    
+    def explain(self, image_tensor, target_class=None, original_image=None):
         """
-        Generate a Grad-CAM explanation.
+        Generate Grad-CAM for a normalized image tensor.
 
-        Args:
-            image_tensor: Normalized image tensor, shape (C, H, W).
-            target_class: Class index to explain. If None, explain the
-                          model's predicted class.
+        image_tensor:
+            Normalized tensor (C, H, W) used for model inference.
 
-        Returns:
-            Dictionary containing the original image, heatmap, overlay,
-            prediction, confidence, true-independent class information.
+        target_class:
+            Class index to explain. Defaults to the predicted class.
+
+        original_image:
+            Optional original-resolution RGB PIL image. When supplied,
+            the overlay is generated at the original image dimensions.
         """
 
         input_tensor = image_tensor.unsqueeze(0).to(self.device)
@@ -77,7 +80,6 @@ class GradCAMExplainer:
             predicted_class = logits.argmax(dim=1).item()
             confidence = probabilities[0, predicted_class].item()
 
-        # Default to explaining the predicted class.
         if target_class is None:
             target_class = predicted_class
 
@@ -86,7 +88,7 @@ class GradCAMExplainer:
 
         targets = [ClassifierOutputTarget(target_class)]
 
-        # Grad-CAM needs gradients, so do not wrap this in no_grad().
+        # Grad-CAM runs on the resized model input.
         with GradCAM(
             model=self.model,
             target_layers=self.target_layers
@@ -96,8 +98,32 @@ class GradCAMExplainer:
                 targets=targets
             )[0]
 
-        rgb_image = self.denormalize(image_tensor)
+        # Prepare the image for visualization.
+        if original_image is not None:
+            rgb_image = np.asarray(
+                original_image.convert("RGB"),
+                dtype=np.float32
+            ) / 255.0
+        else:
+            rgb_image = self.denormalize(image_tensor)
 
+        # Resize the heatmap to the displayed image dimensions.
+        height, width = rgb_image.shape[:2]
+
+        heatmap_image = Image.fromarray(
+            np.uint8(np.clip(grayscale_cam, 0, 1) * 255)
+        )
+
+        heatmap_image = heatmap_image.resize(
+            (width, height),
+            resample=Image.Resampling.BILINEAR
+        )
+
+        grayscale_cam = (
+            np.asarray(heatmap_image, dtype=np.float32) / 255.0
+        )
+
+        # Overlay and original now have matching dimensions.
         overlay = show_cam_on_image(
             rgb_image,
             grayscale_cam,
